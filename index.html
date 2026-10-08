@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Teachable Machine 姿勢控制冒險遊戲</title>
+  <!-- 載入 TensorFlow.js 與 Teachable Machine Pose 函式庫 -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/pose@0.8.3/dist/teachablemachine-pose.min.js"></script>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #1a1a2e;
+      color: #ffffff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin: 0;
+      padding: 20px;
+    }
+
+    h1 {
+      margin-bottom: 10px;
+      color: #00fff5;
+    }
+
+    .instructions {
+      background-color: #16213e;
+      padding: 15px;
+      border-radius: 8px;
+      max-width: 800px;
+      margin-bottom: 20px;
+      line-height: 1.6;
+    }
+
+    .main-container {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .panel {
+      background-color: #0f3460;
+      padding: 15px;
+      border-radius: 12px;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    #gameCanvas {
+      background-color: #000;
+      border-radius: 8px;
+      border: 2px solid #00fff5;
+    }
+
+    #webcam-container {
+      width: 300px;
+      height: 300px;
+      border-radius: 8px;
+      overflow: hidden;
+      background-color: #000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    #webcam-container canvas {
+      width: 100% !important;
+      height: 100% !important;
+      object-fit: cover;
+    }
+
+    .btn {
+      background-color: #e94560;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      font-size: 16px;
+      font-weight: bold;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-bottom: 15px;
+      transition: background 0.3s;
+    }
+
+    .btn:hover {
+      background-color: #ff6b81;
+    }
+
+    #label-container {
+      width: 100%;
+      margin-top: 15px;
+    }
+
+    .label-card {
+      background: rgba(255, 255, 255, 0.1);
+      margin: 5px 0;
+      padding: 8px 12px;
+      border-radius: 6px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .bar-container {
+      width: 100px;
+      background-color: #333;
+      height: 10px;
+      border-radius: 5px;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      background-color: #00fff5;
+      width: 0%;
+      transition: width 0.1s ease-out;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>姿勢控制 - 魔法避障大冒險</h1>
+
+  <div class="instructions">
+    <strong>🎮 遊戲操作說明：</strong>
+    <ul>
+      <li>按下「啟動攝影機與遊戲」開始。</li>
+      <li><strong>向左傾斜身體</strong>：玩家角色向左移動。</li>
+      <li><strong>向右傾斜身體</strong>：玩家角色向右移動。</li>
+      <li><strong>高舉雙手（Shield）</strong>：開啟藍色防護罩，擊碎落石！</li>
+      <li>躲避紅色的落石，獲得高分吧！</li>
+    </ul>
+  </div>
+
+  <button class="btn" onclick="init()">啟動攝影機與遊戲</button>
+
+  <div class="main-container">
+    <!-- 左側：攝影機畫面與信心分數 -->
+    <div class="panel">
+      <h3>📷 攝影機辨識與分數</h3>
+      <div id="webcam-container"></div>
+      <div id="label-container"></div>
+    </div>
+
+    <!-- 右側：靜態網頁遊戲畫面 -->
+    <div class="panel">
+      <h3>🛡️ 遊戲畫面</h3>
+      <canvas id="gameCanvas" width="400" height="400"></canvas>
+    </div>
+  </div>
+
+  <script>
+    // -------------------------------------------------------------
+    // 1. Teachable Machine 設定區
+    // 請將替換為你在 Teachable Machine 匯出的模型網址
+    // -------------------------------------------------------------
+    const URL = "https://teachablemachine.withgoogle.com/models/YOUR_MODEL_URL_HERE/";
+
+    let model, webcam, ctx, labelContainer, maxPredictions;
+    let currentPrediction = "";
+    let isGameRunning = false;
+
+    // -------------------------------------------------------------
+    // 2. 初始化 Teachable Machine 姿勢模型與攝影機
+    // -------------------------------------------------------------
+    async function init() {
+      const modelURL = URL + "model.json";
+      const metadataURL = URL + "metadata.json";
+
+      // 載入模型與元數據
+      model = await tmPose.load(modelURL, metadataURL);
+      maxPredictions = model.getTotalClasses();
+
+      // 設定攝影機 (尺寸: 300x300, 啟用骨架繪製)
+      const size = 300;
+      const flip = true; // 是否水平翻轉鏡頭
+      webcam = new tmPose.Webcam(size, size, flip);
+      await webcam.setup(); // 請求存取攝影機
+      await webcam.play();
+      window.requestAnimationFrame(loop);
+
+      // 插入攝影機 Canvas 到 DOM
+      document.getElementById("webcam-container").appendChild(webcam.canvas);
+
+      // 初始化顯示辨識機率的 HTML 標籤
+      labelContainer = document.getElementById("label-container");
+      labelContainer.innerHTML = "";
+      for (let i = 0; i < maxPredictions; i++) {
+        const card = document.createElement("div");
+        card.className = "label-card";
+        card.innerHTML = `
+          <span id="class-name-${i}">類別</span>
+          <div class="bar-container">
+            <div id="class-bar-${i}" class="bar-fill"></div>
+          </div>
+          <span id="class-score-${i}">0%</span>
+        `;
+        labelContainer.appendChild(card);
+      }
+
+      // 開始遊戲迴圈
+      isGameRunning = true;
+      resetGame();
+    }
+
+    // 逐格預測迴圈
+    async function loop(timestamp) {
+      webcam.update();
+      await predict();
+      if (isGameRunning) {
+        updateGame();
+        drawGame();
+      }
+      window.requestAnimationFrame(loop);
+    }
+
+    // 進行姿勢辨識
+    async function predict() {
+      const { pose, posenetOutput } = await model.estimatePose(webcam.canvas);
+      const prediction = await model.predict(posenetOutput);
+
+      let highestScore = 0;
+      let topClass = "";
+
+      for (let i = 0; i < maxPredictions; i++) {
+        const className = prediction[i].className;
+        const probability = prediction[i].probability;
+        const percent = (probability * 100).toFixed(0);
+
+        document.getElementById(`class-name-${i}`).innerText = className;
+        document.getElementById(`class-bar-${i}`).style.width = percent + "%";
+        document.getElementById(`class-score-${i}`).innerText = percent + "%";
+
+        // 找出信心分數最高的分類 (需大於 75% 才採納)
+        if (probability > highestScore && probability > 0.75) {
+          highestScore = probability;
+          topClass = className;
+        }
+      }
+
+      currentPrediction = topClass;
+
+      // 繪製骨架到攝影機畫面上
+      if (pose) {
+        const ctx = webcam.canvas.getContext("2d");
+        ctx.drawImage(webcam.canvas, 0, 0);
+        tmPose.drawKeypoints(pose.keypoints, 0.5, ctx);
+        tmPose.drawSkeleton(pose.keypoints, 0.5, ctx);
+      }
+    }
+
+    // -------------------------------------------------------------
+    // 3. 靜態網頁遊戲邏輯 (HTML5 Canvas Game)
+    // -------------------------------------------------------------
+    const canvas = document.getElementById("gameCanvas");
+    const gameCtx = canvas.getContext("2d");
+
+    let player = {
+      x: 180,
+      y: 340,
+      width: 40,
+      height: 40,
+      speed: 6,
+      hasShield: false
+    };
+
+    let obstacle = {
+      x: Math.random() * 360,
+      y: -20,
+      size: 30,
+      speed: 4
+    };
+
+    let score = 0;
+    let gameOver = false;
+    let effectMessage = "";
+    let effectTimer = 0;
+
+    function resetGame() {
+      player.x = 180;
+      score = 0;
+      gameOver = false;
+      obstacle.y = -20;
+      obstacle.x = Math.random() * (canvas.width - obstacle.size);
+    }
+
+    function updateGame() {
+      if (gameOver) return;
+
+      // 依據模型辨識結果驅動遊戲互動效果
+      if (currentPrediction === "Left") {
+        player.x -= player.speed;
+        if (player.x < 0) player.x = 0;
+      } else if (currentPrediction === "Right") {
+        player.x += player.speed;
+        if (player.x > canvas.width - player.width) player.x = canvas.width - player.width;
+      }
+
+      // 觸發特定技能（例如：舉高雙手開啟護盾）
+      if (currentPrediction === "Shield") {
+        player.hasShield = true;
+      } else {
+        player.hasShield = false;
+      }
+
+      // 障礙物下落邏輯
+      obstacle.y += obstacle.speed;
+      if (obstacle.y > canvas.height) {
+        obstacle.y = -20;
+        obstacle.x = Math.random() * (canvas.width - obstacle.size);
+        score += 10;
+        // 每 50 分提升難度
+        if (score % 50 === 0) obstacle.speed += 0.5;
+      }
+
+      // 碰撞檢測
+      if (
+        player.x < obstacle.x + obstacle.size &&
+        player.x + player.width > obstacle.x &&
+        player.y < obstacle.y + obstacle.size &&
+        player.y + player.height > obstacle.y
+      ) {
+        if (player.hasShield) {
+          // 開啟護盾成功粉碎障礙物！
+          obstacle.y = -20;
+          obstacle.x = Math.random() * (canvas.width - obstacle.size);
+          score += 20;
+          triggerMessage("🛡️ 護盾抵擋成功！ +20分");
+        } else {
+          // 未開啟護盾，遊戲結束
+          gameOver = true;
+        }
+      }
+
+      if (effectTimer > 0) effectTimer--;
+    }
+
+    function triggerMessage(msg) {
+      effectMessage = msg;
+      effectTimer = 60; // 顯示約 1 秒
+    }
+
+    function drawGame() {
+      // 畫面動態變化：根據辨識狀態更換遊戲背景底色
+      if (player.hasShield) {
+        gameCtx.fillStyle = "#0f2027"; // 開啟護盾時呈暗藍色背景
+      } else {
+        gameCtx.fillStyle = "#111111"; // 一般狀態背景
+      }
+      gameCtx.fillRect(0, 0, canvas.width, canvas.height);
+
+      if (gameOver) {
+        gameCtx.fillStyle = "#ff4757";
+        gameCtx.font = "30px Arial";
+        gameCtx.textAlign = "center";
+        gameCtx.fillText("GAME OVER", canvas.width / 2, canvas.height / 2 - 10);
+        gameCtx.fillStyle = "#ffffff";
+        gameCtx.font = "16px Arial";
+        gameCtx.fillText(`最終得分: ${score}`, canvas.width / 2, canvas.height / 2 + 25);
+        return;
+      }
+
+      // 繪製玩家角色
+      gameCtx.fillStyle = "#00fff5";
+      gameCtx.fillRect(player.x, player.y, player.width, player.height);
+
+      // 繪製護盾效果（畫面視覺變化）
+      if (player.hasShield) {
+        gameCtx.strokeStyle = "#00a8ff";
+        gameCtx.lineWidth = 4;
+        gameCtx.beginPath();
+        gameCtx.arc(
+          player.x + player.width / 2,
+          player.y + player.height / 2,
+          32,
+          0,
+          Math.PI * 2
+        );
+        gameCtx.stroke();
+      }
+
+      // 繪製障礙物
+      gameCtx.fillStyle = "#ff4757";
+      gameCtx.fillRect(obstacle.x, obstacle.y, obstacle.size, obstacle.size);
+
+      // 繪製分數
+      gameCtx.fillStyle = "#ffffff";
+      gameCtx.font = "18px Arial";
+      gameCtx.textAlign = "left";
+      gameCtx.fillText(`Score: ${score}`, 15, 30);
+
+      // 顯示互動訊息
+      if (effectTimer > 0) {
+        gameCtx.fillStyle = "#eccc68";
+        gameCtx.font = "16px Arial";
+        gameCtx.textAlign = "center";
+        gameCtx.fillText(effectMessage, canvas.width / 2, 60);
+      }
+    }
+  </script>
+</body>
+</html>
